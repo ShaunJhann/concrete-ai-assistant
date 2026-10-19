@@ -6,29 +6,19 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# ----------------------------
-# App configuration
-# ----------------------------
 st.set_page_config(
     page_title="Concrete AI Assistant",
     page_icon="🏗️",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 MODEL_FILE = Path(__file__).parent / "random_forest_concrete_strength_model.pkl"
-
 FEATURES = [
-    "cement",
-    "blast_furnace_slag",
-    "fly_ash",
-    "water",
-    "superplasticizer",
-    "coarse_aggregate",
-    "fine_aggregate",
-    "age",
+    "cement", "blast_furnace_slag", "fly_ash", "water",
+    "superplasticizer", "coarse_aggregate", "fine_aggregate", "age",
 ]
-
-FEATURE_LABELS = {
+LABELS = {
     "cement": "Cement",
     "blast_furnace_slag": "Blast Furnace Slag",
     "fly_ash": "Fly Ash",
@@ -38,466 +28,444 @@ FEATURE_LABELS = {
     "fine_aggregate": "Fine Aggregate",
     "age": "Curing Age",
 }
-
-UNITS = {
-    "cement": "kg/m³",
-    "blast_furnace_slag": "kg/m³",
-    "fly_ash": "kg/m³",
-    "water": "kg/m³",
-    "superplasticizer": "kg/m³",
-    "coarse_aggregate": "kg/m³",
-    "fine_aggregate": "kg/m³",
-    "age": "days",
-}
-
+UNITS = {f: ("days" if f == "age" else "kg/m³") for f in FEATURES}
 DEFAULTS = {
-    "cement": 300.0,
-    "blast_furnace_slag": 100.0,
-    "fly_ash": 0.0,
-    "water": 180.0,
-    "superplasticizer": 5.0,
-    "coarse_aggregate": 1000.0,
-    "fine_aggregate": 750.0,
-    "age": 28,
+    "cement": 300.0, "blast_furnace_slag": 100.0, "fly_ash": 0.0,
+    "water": 180.0, "superplasticizer": 5.0,
+    "coarse_aggregate": 1000.0, "fine_aggregate": 750.0, "age": 28,
 }
+
+st.markdown("""
+<style>
+.block-container {padding-top: 1.6rem; padding-bottom: 2.5rem; max-width: 1250px;}
+[data-testid="stMetric"] {background: rgba(120,120,120,0.07); padding: 14px 16px; border-radius: 12px;}
+div.stButton > button[kind="primary"] {border-radius: 10px; font-weight: 650; min-height: 2.8rem;}
+section[data-testid="stSidebar"] {border-right: 1px solid rgba(128,128,128,.2);}
+.hero {padding: 1.4rem 1.5rem; border-radius: 16px; border: 1px solid rgba(128,128,128,.25); margin-bottom: 1rem;}
+.small-muted {font-size: .9rem; opacity: .8;}
+</style>
+""", unsafe_allow_html=True)
 
 
 @st.cache_resource
 def load_model():
     if not MODEL_FILE.exists():
-        raise FileNotFoundError(
-            f"Could not find {MODEL_FILE.name}. Keep it in the same folder as app.py."
-        )
+        raise FileNotFoundError(f"Missing model file: {MODEL_FILE.name}")
     return joblib.load(MODEL_FILE)
 
 
-def predict_strength(model, values):
-    """Predict one mix using the feature names expected by the trained model."""
-    row = {feature: values[feature] for feature in FEATURES}
-    frame = pd.DataFrame([row], columns=FEATURES)
-    prediction = float(model.predict(frame)[0])
-    return prediction
+def make_input_frame(values):
+    return pd.DataFrame([{f: values[f] for f in FEATURES}], columns=FEATURES)
 
 
-def get_inputs(prefix="main", defaults=None):
-    """Render the eight model inputs in two columns."""
+def predict(model, values):
+    return float(model.predict(make_input_frame(values))[0])
+
+
+def input_form(prefix, defaults=None):
     defaults = defaults or DEFAULTS
     values = {}
-    col1, col2 = st.columns(2)
-
-    with col1:
-        for feature in FEATURES[:4]:
-            values[feature] = st.number_input(
-                f"{FEATURE_LABELS[feature]} ({UNITS[feature]})",
-                min_value=0.0,
-                value=float(defaults[feature]),
-                step=1.0,
-                key=f"{prefix}_{feature}",
-                help="Enter the quantity per cubic metre of concrete.",
+    left, right = st.columns(2)
+    with left:
+        for f in FEATURES[:4]:
+            values[f] = st.number_input(
+                f"{LABELS[f]} ({UNITS[f]})",
+                min_value=0.0, value=float(defaults[f]), step=1.0,
+                key=f"{prefix}_{f}",
             )
-
-    with col2:
-        for feature in FEATURES[4:]:
-            min_value = 1.0 if feature == "age" else 0.0
-            values[feature] = st.number_input(
-                f"{FEATURE_LABELS[feature]} ({UNITS[feature]})",
-                min_value=min_value,
-                value=float(defaults[feature]),
-                step=1.0,
-                key=f"{prefix}_{feature}",
-                help=(
-                    "Curing age must be at least one day."
-                    if feature == "age"
-                    else "Enter the quantity per cubic metre of concrete."
-                ),
+    with right:
+        for f in FEATURES[4:]:
+            values[f] = st.number_input(
+                f"{LABELS[f]} ({UNITS[f]})",
+                min_value=1.0 if f == "age" else 0.0,
+                value=float(defaults[f]), step=1.0, key=f"{prefix}_{f}",
             )
-
     values["age"] = int(values["age"])
     return values
 
 
-def feature_importance_frame(model):
-    if not hasattr(model, "feature_importances_"):
+def importance_frame(model):
+    vals = getattr(model, "feature_importances_", None)
+    if vals is None or len(vals) != len(FEATURES):
         return None
-    values = np.asarray(model.feature_importances_, dtype=float)
-    if len(values) != len(FEATURES):
-        return None
-    frame = pd.DataFrame({
-        "Feature": [FEATURE_LABELS[f] for f in FEATURES],
-        "Importance": values,
+    return pd.DataFrame({
+        "Feature": [LABELS[f] for f in FEATURES],
         "Model feature": FEATURES,
-    })
-    return frame.sort_values("Importance", ascending=False)
+        "Importance": np.asarray(vals, dtype=float),
+    }).sort_values("Importance", ascending=False)
 
 
-def mix_frame(values):
-    return pd.DataFrame([{f: values[f] for f in FEATURES}], columns=FEATURES)
-
-
-def render_result_explanation(prediction):
-    st.markdown("#### How to interpret this estimate")
-    st.write(
-        f"The model estimates a compressive strength of **{prediction:.2f} MPa** "
-        "for the entered mixture and curing age. This is a prediction from the "
-        "trained Random Forest model, not a laboratory test result."
-    )
+def show_caveat():
     st.caption(
-        "Use this result for educational and preliminary comparison only. "
-        "Validate concrete performance through appropriate laboratory testing "
-        "and follow applicable design codes and professional engineering judgment."
+        "Educational and preliminary estimation only. Model predictions are not "
+        "laboratory test results and must not replace applicable standards, "
+        "validated mix design, laboratory testing, or professional engineering judgment."
     )
 
 
-# ----------------------------
-# Navigation and shared model
-# ----------------------------
+def render_shap(model, values):
+    try:
+        import shap
+    except ImportError:
+        st.warning("SHAP is not installed. Add `shap` to requirements.txt and redeploy.")
+        return
+
+    try:
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer(make_input_frame(values))
+        sv = np.asarray(shap_values.values)
+        if sv.ndim == 3:
+            sv = sv[0, :, 0]
+        else:
+            sv = sv.reshape(-1)
+        base_values = np.asarray(shap_values.base_values).reshape(-1)
+        base = float(base_values[0]) if len(base_values) else float(np.mean(model.predict(
+            pd.DataFrame([DEFAULTS], columns=FEATURES)
+        )))
+        explain_df = pd.DataFrame({
+            "Input": [LABELS[f] for f in FEATURES],
+            "Entered value": [values[f] for f in FEATURES],
+            "Unit": [UNITS[f] for f in FEATURES],
+            "SHAP contribution (MPa)": sv,
+            "Absolute contribution": np.abs(sv),
+        }).sort_values("Absolute contribution", ascending=False)
+
+        st.markdown("#### Individual prediction explanation")
+        st.write(
+            "SHAP values show how each input moves this prediction away from the "
+            "model's baseline output. Positive values push the prediction higher; "
+            "negative values push it lower, relative to that baseline."
+        )
+        chart = explain_df.set_index("Input")[["SHAP contribution (MPa)"]]
+        st.bar_chart(chart, horizontal=True)
+        st.dataframe(
+            explain_df[["Input", "Entered value", "Unit", "SHAP contribution (MPa)"]]
+            .round(4),
+            hide_index=True, use_container_width=True,
+        )
+        st.caption(f"Model baseline output for this explainer: approximately {base:.2f} MPa.")
+        st.info(
+            "SHAP explains this model prediction, not a causal physical effect. "
+            "Interpret contributions in the context of the training dataset."
+        )
+    except Exception as e:
+        st.error(f"Could not calculate SHAP values for this model: {e}")
+
+
+def get_api_key():
+    key = os.getenv("OPENAI_API_KEY", "")
+    if not key:
+        try:
+            key = st.secrets.get("OPENAI_API_KEY", "")
+        except Exception:
+            pass
+    return key
+
+
 st.sidebar.title("🏗️ Concrete AI Assistant")
+st.sidebar.caption("AI-assisted concrete strength estimation")
 page = st.sidebar.radio(
-    "Navigation",
+    "Navigate",
     [
-        "Home",
-        "Strength Predictor",
-        "Explainable AI",
-        "Mix Comparison",
-        "Engineering Assistant",
-        "Dataset and Model",
-        "Program Relevance",
+        "Home", "Strength Predictor", "SHAP Explainable AI",
+        "Model Evaluation", "Mix Comparison", "Engineering Assistant",
+        "Dataset and Model", "Program Relevance",
     ],
 )
 st.sidebar.markdown("---")
-st.sidebar.caption("Civil Engineering AI Project")
+st.sidebar.caption("Civil Engineering Research Project")
 
 try:
     model = load_model()
-except Exception as error:
+    model_error = None
+except Exception as exc:
     model = None
-    st.sidebar.error("Model could not be loaded.")
-    st.sidebar.caption(str(error))
+    model_error = str(exc)
+    st.sidebar.error("Model unavailable")
+    st.sidebar.caption(model_error)
 
-# ----------------------------
-# Home
-# ----------------------------
 if page == "Home":
+    st.markdown('<div class="hero">', unsafe_allow_html=True)
     st.title("Concrete AI Assistant")
     st.subheader("AI-Based Concrete Compressive Strength Prediction")
     st.write(
-        "Estimate concrete compressive strength using a trained Random Forest "
-        "Regression model, inspect model-level feature importance, compare "
-        "alternative mixtures, and ask general concrete-engineering questions."
+        "A machine-learning web application for predicting concrete compressive "
+        "strength from mixture proportions and curing age, explaining predictions, "
+        "and comparing candidate mixtures."
     )
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Prediction Model", "Random Forest")
-    c2.metric("Input Features", "8")
-    c3.metric("Output", "Strength (MPa)")
-
-    st.markdown("### Available tools")
-    st.markdown(
-        "- **Strength Predictor:** estimate strength for one concrete mixture.\n"
-        "- **Explainable AI:** review the model's overall feature-importance scores.\n"
-        "- **Mix Comparison:** compare predictions for up to five alternative mixtures.\n"
-        "- **Engineering Assistant:** ask concrete-related questions; optional LLM support "
-        "requires an API key."
-    )
+    st.markdown("</div>", unsafe_allow_html=True)
+    a, b, c = st.columns(3)
+    a.metric("Prediction algorithm", "Random Forest")
+    b.metric("Input variables", "8")
+    c.metric("Prediction unit", "MPa")
+    st.markdown("### Explore the application")
+    cards = st.columns(2)
+    with cards[0]:
+        st.markdown("**Strength Predictor**")
+        st.write("Estimate compressive strength from an entered concrete mixture.")
+        st.markdown("**SHAP Explainable AI**")
+        st.write("Inspect how individual inputs contribute to a specific prediction.")
+        st.markdown("**Model Evaluation**")
+        st.write("Calculate MAE, RMSE, and R² using a labeled evaluation CSV.")
+    with cards[1]:
+        st.markdown("**Mix Comparison**")
+        st.write("Compare alternative mixtures using the same trained model.")
+        st.markdown("**Engineering Assistant**")
+        st.write("Ask concrete-related questions with optional LLM API support.")
+        st.markdown("**Dataset and Model**")
+        st.write("Review the model features and methodology.")
     st.info(
-        "For educational and preliminary estimation only. The app does not replace "
-        "laboratory testing, approved mix design procedures, applicable codes, or "
-        "professional engineering judgment."
+        "Model quality metrics are not guessed. Upload a valid labeled test dataset "
+        "on the Model Evaluation page to calculate scores."
     )
+    show_caveat()
 
-# ----------------------------
-# Strength Predictor
-# ----------------------------
 elif page == "Strength Predictor":
-    st.title("Concrete Compressive Strength Predictor")
+    st.title("Concrete Strength Predictor")
     st.write("Enter the concrete mixture proportions and curing age.")
     if model is None:
-        st.error("The model is unavailable. Check that the .pkl file is beside app.py.")
+        st.error(f"Could not load the model: {model_error}")
     else:
-        values = get_inputs("predictor")
-        if st.button("Predict Strength", type="primary", use_container_width=True):
+        values = input_form("predict")
+        if st.button("Predict Compressive Strength", type="primary", use_container_width=True):
             try:
-                prediction = predict_strength(model, values)
-                st.session_state["last_prediction"] = {
-                    "inputs": values,
-                    "prediction": prediction,
-                }
-                st.success(f"Estimated Compressive Strength: {prediction:.2f} MPa")
-                render_result_explanation(prediction)
-                with st.expander("Review entered mixture"):
-                    st.dataframe(
-                        pd.DataFrame({
-                            "Input": [FEATURE_LABELS[f] for f in FEATURES],
-                            "Value": [values[f] for f in FEATURES],
-                            "Unit": [UNITS[f] for f in FEATURES],
-                        }),
-                        hide_index=True,
-                        use_container_width=True,
-                    )
-            except Exception as error:
-                st.error(f"Prediction failed: {error}")
+                result = predict(model, values)
+                st.session_state["last_values"] = values
+                st.session_state["last_prediction"] = result
+                st.success("Prediction complete")
+                st.metric("Estimated compressive strength", f"{result:.2f} MPa")
+                st.markdown("#### Entered mixture")
+                st.dataframe(pd.DataFrame({
+                    "Feature": [LABELS[f] for f in FEATURES],
+                    "Value": [values[f] for f in FEATURES],
+                    "Unit": [UNITS[f] for f in FEATURES],
+                }), hide_index=True, use_container_width=True)
+                show_caveat()
+            except Exception as e:
+                st.error(f"Prediction failed: {e}")
 
-# ----------------------------
-# Explainable AI
-# ----------------------------
-elif page == "Explainable AI":
-    st.title("Explainable AI")
+elif page == "SHAP Explainable AI":
+    st.title("SHAP Explainable AI")
     st.write(
-        "This page reports the Random Forest model's built-in feature importance. "
-        "These scores describe the model's overall use of each input feature; they "
-        "do not prove that a feature causes a strength change in every mixture."
+        "SHAP provides a local explanation for an individual model prediction. "
+        "This is different from the Random Forest's overall feature-importance ranking."
     )
-
     if model is None:
-        st.error("The model is unavailable.")
+        st.error(f"Could not load the model: {model_error}")
     else:
-        importance = feature_importance_frame(model)
-        if importance is None:
-            st.warning(
-                "This model does not expose a compatible feature_importances_ attribute."
-            )
-        else:
-            top = importance.iloc[0]
-            st.metric("Highest model-level importance", top["Feature"], f'{top["Importance"]:.1%}')
-            chart_data = importance.set_index("Feature")[["Importance"]]
-            st.bar_chart(chart_data, horizontal=True)
-            st.dataframe(
-                importance[["Feature", "Importance"]].assign(
-                    **{"Importance (%)": (importance["Importance"] * 100).round(2)}
-                )[["Feature", "Importance (%)"]],
-                hide_index=True,
-                use_container_width=True,
-            )
-            st.caption(
-                "Importance scores are relative and generally sum to 1. They are not "
-                "the percentage of strength caused by each ingredient."
-            )
-
-        st.markdown("### Explore a prediction")
-        st.write(
-            "Enter a mixture to see its prediction and compare its inputs with the "
-            "model's overall feature-importance ranking."
-        )
-        values = get_inputs("explain")
-        if st.button("Analyze This Mixture", type="primary"):
+        values = input_form("shap")
+        if st.button("Explain This Prediction", type="primary", use_container_width=True):
             try:
-                prediction = predict_strength(model, values)
-                st.success(f"Predicted strength: {prediction:.2f} MPa")
-                render_result_explanation(prediction)
-                importance = feature_importance_frame(model)
-                if importance is not None:
-                    st.markdown("#### Inputs ordered by overall model importance")
-                    explanation = importance.copy()
-                    explanation["Entered value"] = explanation["Model feature"].map(values)
-                    explanation["Unit"] = explanation["Model feature"].map(UNITS)
-                    st.dataframe(
-                        explanation[["Feature", "Entered value", "Unit", "Importance"]].assign(
-                            Importance=lambda d: (d["Importance"] * 100).round(2).astype(str) + "%"
-                        ),
-                        hide_index=True,
-                        use_container_width=True,
-                    )
-                st.info(
-                    "This is a model-level explanation, not a SHAP or causal explanation "
-                    "of why this individual prediction has its particular value."
-                )
-            except Exception as error:
-                st.error(f"Analysis failed: {error}")
+                result = predict(model, values)
+                st.metric("Predicted compressive strength", f"{result:.2f} MPa")
+                render_shap(model, values)
+                show_caveat()
+            except Exception as e:
+                st.error(f"Could not generate prediction explanation: {e}")
 
-# ----------------------------
-# Mix Comparison
-# ----------------------------
+elif page == "Model Evaluation":
+    st.title("Model Evaluation")
+    st.write(
+        "Calculate MAE, RMSE, and R² on a labeled test/evaluation dataset. "
+        "The uploaded file must contain the same eight input columns as the model "
+        "and a measured compressive-strength target column."
+    )
+    st.warning(
+        "Use an independent held-out test set or clearly describe your evaluation "
+        "method. Do not report training-set scores as test performance."
+    )
+    if model is None:
+        st.error(f"Could not load the model: {model_error}")
+    else:
+        uploaded = st.file_uploader("Upload labeled evaluation data (.csv)", type=["csv"])
+        target_name = st.text_input(
+            "Target column name",
+            value="concrete_compressive_strength",
+            help="Common UCI dataset target name. Change this to match your CSV exactly.",
+        )
+        if uploaded is not None:
+            try:
+                data = pd.read_csv(uploaded)
+                st.write("Preview of uploaded dataset")
+                st.dataframe(data.head(), use_container_width=True)
+                missing = [f for f in FEATURES if f not in data.columns]
+                if missing:
+                    st.error("Missing required input columns: " + ", ".join(missing))
+                elif target_name not in data.columns:
+                    st.error(
+                        f"Target column '{target_name}' was not found. Available columns: "
+                        + ", ".join(map(str, data.columns))
+                    )
+                else:
+                    clean = data[FEATURES + [target_name]].apply(pd.to_numeric, errors="coerce").dropna()
+                    if len(clean) < 2:
+                        st.error("At least two complete numeric rows are required.")
+                    elif st.button("Calculate Evaluation Metrics", type="primary"):
+                        from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+                        y_true = clean[target_name].to_numpy(dtype=float)
+                        y_pred = model.predict(clean[FEATURES])
+                        mae = mean_absolute_error(y_true, y_pred)
+                        rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+                        r2 = r2_score(y_true, y_pred)
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("MAE", f"{mae:.4f} MPa")
+                        m2.metric("RMSE", f"{rmse:.4f} MPa")
+                        m3.metric("R²", f"{r2:.4f}")
+                        st.write(f"Rows evaluated: **{len(clean)}**")
+                        scored = clean.copy()
+                        scored["Predicted strength (MPa)"] = y_pred
+                        scored["Residual (actual - predicted)"] = y_true - y_pred
+                        st.dataframe(scored, hide_index=True, use_container_width=True)
+                        st.download_button(
+                            "Download scored results",
+                            data=scored.to_csv(index=False).encode("utf-8"),
+                            file_name="concrete_model_evaluation_results.csv",
+                            mime="text/csv",
+                        )
+                        st.caption(
+                            "Metrics reflect only the rows and target values in the uploaded file. "
+                            "Record the dataset split and evaluation method in your report."
+                        )
+            except Exception as e:
+                st.error(f"Could not read or evaluate this CSV: {e}")
+
 elif page == "Mix Comparison":
     st.title("Concrete Mix Comparison")
-    st.write(
-        "Compare up to five mixture alternatives. The predictions are generated by "
-        "the same trained model so that the alternatives can be reviewed consistently."
-    )
-
+    st.write("Compare predictions for up to five candidate concrete mixtures.")
     if model is None:
-        st.error("The model is unavailable.")
+        st.error(f"Could not load the model: {model_error}")
     else:
-        number_of_mixes = st.selectbox("Number of mixtures to compare", [2, 3, 4, 5], index=1)
-        all_values = []
-        for i in range(number_of_mixes):
+        n = st.selectbox("Number of mixtures", [2, 3, 4, 5], index=1)
+        mixtures = []
+        for i in range(n):
             with st.expander(f"Mixture {i + 1}", expanded=(i < 2)):
-                all_values.append(get_inputs(f"mix_{i+1}"))
-
+                mixtures.append(input_form(f"mix{i+1}"))
         if st.button("Compare Mixtures", type="primary", use_container_width=True):
             try:
                 rows = []
-                for i, values in enumerate(all_values, start=1):
+                for i, vals in enumerate(mixtures, start=1):
                     rows.append({
                         "Mixture": f"Mixture {i}",
-                        "Predicted strength (MPa)": predict_strength(model, values),
-                        **{FEATURE_LABELS[f]: values[f] for f in FEATURES},
+                        "Predicted strength (MPa)": predict(model, vals),
+                        **{LABELS[f]: vals[f] for f in FEATURES},
                     })
-                results = pd.DataFrame(rows)
-                results = results.sort_values(
+                result = pd.DataFrame(rows).sort_values(
                     "Predicted strength (MPa)", ascending=False
                 ).reset_index(drop=True)
-                st.markdown("### Results")
-                best = results.iloc[0]
-                st.metric(
-                    "Highest predicted strength",
-                    f'{best["Predicted strength (MPa)"]:.2f} MPa',
-                    best["Mixture"],
-                )
-                st.bar_chart(
-                    results.set_index("Mixture")[["Predicted strength (MPa)"]],
-                    horizontal=True,
-                )
-                st.dataframe(results, hide_index=True, use_container_width=True)
+                best = result.iloc[0]
+                st.metric("Highest predicted strength", f'{best["Predicted strength (MPa)"]:.2f} MPa', best["Mixture"])
+                st.bar_chart(result.set_index("Mixture")[["Predicted strength (MPa)"]], horizontal=True)
+                st.dataframe(result, hide_index=True, use_container_width=True)
                 st.download_button(
-                    "Download comparison as CSV",
-                    data=results.to_csv(index=False).encode("utf-8"),
-                    file_name="concrete_mix_comparison.csv",
-                    mime="text/csv",
+                    "Download comparison CSV", result.to_csv(index=False).encode("utf-8"),
+                    "concrete_mix_comparison.csv", "text/csv"
                 )
                 st.warning(
-                    "The highest predicted strength is not automatically the best or "
-                    "most economical mix. Workability, durability, exposure, materials, "
-                    "cost, specifications, and laboratory validation must also be considered."
+                    "The highest predicted strength is not automatically the best mix. "
+                    "Workability, durability, cost, exposure conditions, specifications, "
+                    "and laboratory validation must also be considered."
                 )
-            except Exception as error:
-                st.error(f"Comparison failed: {error}")
+            except Exception as e:
+                st.error(f"Comparison failed: {e}")
 
-# ----------------------------
-# Engineering Assistant
-# ----------------------------
 elif page == "Engineering Assistant":
     st.title("Concrete Engineering Assistant")
     st.write(
-        "Ask general questions about concrete materials, compressive strength, curing, "
-        "or how to interpret this app's predictions."
+        "Ask about concrete materials, curing, compressive strength, or interpreting "
+        "this application's predictions."
     )
-
     st.info(
-        "Without an API key, this page provides a basic built-in guidance mode. "
-        "To enable LLM responses, set OPENAI_API_KEY as an environment variable or "
-        "in Streamlit secrets. Never commit the key to source control."
+        "Configure OPENAI_API_KEY in Streamlit Secrets to enable AI-generated responses. "
+        "Without a key, the page will explain how to enable the feature but cannot call an LLM."
     )
-
     question = st.text_area(
         "Your question",
-        placeholder="Example: Why does curing age affect concrete compressive strength?",
+        placeholder="Example: How does curing age affect compressive strength?",
         height=120,
     )
-
-    if st.button("Ask Assistant", type="primary"):
+    if st.button("Ask Engineering Assistant", type="primary"):
         if not question.strip():
             st.warning("Enter a question first.")
         else:
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                try:
-                    api_key = st.secrets.get("OPENAI_API_KEY", "")
-                except Exception:
-                    api_key = ""
-
-            if api_key:
+            key = get_api_key()
+            if not key:
+                st.error(
+                    "No API key configured. In Streamlit, open App settings → Secrets and add "
+                    'OPENAI_API_KEY = "your-api-key". Do not put the key in app.py or GitHub.'
+                )
+            else:
                 try:
                     from openai import OpenAI
-
-                    client = OpenAI(api_key=api_key)
-                    with st.spinner("Preparing an answer..."):
+                    client = OpenAI(api_key=key)
+                    with st.spinner("Generating answer..."):
                         response = client.responses.create(
                             model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
                             instructions=(
                                 "You are an educational concrete-engineering assistant. "
-                                "Give clear, cautious explanations. Do not present AI "
-                                "predictions as certified design values. Mention that "
-                                "mix design and structural decisions require applicable "
-                                "codes, laboratory testing, and qualified professionals."
+                                "Explain concepts clearly and distinguish general information "
+                                "from project-specific design advice. Never certify AI predictions "
+                                "as design values. Recommend relevant standards, laboratory "
+                                "testing, and qualified engineering review for real projects."
                             ),
                             input=question.strip(),
                         )
                     st.markdown(response.output_text)
-                except Exception as error:
+                except Exception as e:
                     st.error(
-                        "The LLM request failed. Check the API key, model access, "
-                        f"network connection, and package installation. Details: {error}"
+                        "The LLM request failed. Check your API key, API access, selected model, "
+                        f"and package installation. Details: {e}"
                     )
-            else:
-                st.markdown("### General guidance")
-                st.write(
-                    "I can offer only limited built-in guidance while an LLM API key "
-                    "is not configured. For this topic, review the relevant concrete "
-                    "materials references, your dataset documentation, and the "
-                    "limitations of the prediction model."
-                )
-                st.write(
-                    "Question received: " + question.strip()
-                )
-                st.caption(
-                    "Configure OPENAI_API_KEY to enable generated, question-specific answers."
-                )
 
-# ----------------------------
-# Dataset and Model
-# ----------------------------
 elif page == "Dataset and Model":
-    st.title("Dataset and AI Model")
+    st.title("Dataset and Model")
+    st.markdown("### Model input features")
+    st.dataframe(pd.DataFrame({
+        "Feature": [LABELS[f] for f in FEATURES],
+        "Column name": FEATURES,
+        "Unit": [UNITS[f] for f in FEATURES],
+    }), hide_index=True, use_container_width=True)
+    st.markdown("### Random Forest Regression")
     st.write(
-        "The project is configured around the UCI Concrete Compressive Strength dataset, "
-        "which contains eight input variables and a compressive-strength target."
-    )
-
-    st.markdown("### Input features")
-    st.dataframe(
-        pd.DataFrame({
-            "Feature": [FEATURE_LABELS[f] for f in FEATURES],
-            "Model column": FEATURES,
-            "Unit": [UNITS[f] for f in FEATURES],
-        }),
-        hide_index=True,
-        use_container_width=True,
-    )
-
-    st.markdown("### Algorithm")
-    st.write(
-        "Random Forest Regression combines predictions from multiple decision trees. "
-        "It can model nonlinear relationships among mixture proportions, curing age, "
-        "and measured compressive strength."
-    )
-
-    st.markdown("### Evaluation metrics")
-    st.write(
-        "Use the MAE, RMSE, and R² values calculated on a held-out test set or through "
-        "cross-validation. Those values are not included in the uploaded model file, "
-        "so this page does not invent or display unverified scores."
+        "Random Forest Regression combines predictions from multiple decision trees "
+        "to estimate a continuous value. Its performance depends on training data, "
+        "preprocessing, model settings, and the evaluation method."
     )
     st.markdown(
         "[UCI Concrete Compressive Strength dataset]"
         "(https://archive.ics.uci.edu/dataset/165/concrete+compressive+strength)"
     )
-
     if model is not None:
-        st.markdown("### Model information")
-        st.write(f"Model class: `{type(model).__name__}`")
-        st.write(f"Expected input features: `{getattr(model, 'n_features_in_', 'Unknown')}`")
+        st.markdown("### Loaded model details")
+        st.write(f"Model type: `{type(model).__name__}`")
+        st.write(f"Expected input count: `{getattr(model, 'n_features_in_', 'unknown')}`")
         names = getattr(model, "feature_names_in_", None)
         if names is not None:
             st.write("Stored feature names: " + ", ".join(map(str, names)))
+        imp = importance_frame(model)
+        if imp is not None:
+            st.markdown("### Overall feature importance")
+            st.bar_chart(imp.set_index("Feature")[["Importance"]], horizontal=True)
+    st.caption(
+        "Evaluation metrics are intentionally calculated from a supplied labeled test CSV; "
+        "they are not fabricated from the model file alone."
+    )
 
-# ----------------------------
-# Program Relevance
-# ----------------------------
 elif page == "Program Relevance":
     st.title("Program Relevance")
     st.write(
-        "This project connects artificial intelligence with Civil Engineering by "
-        "demonstrating how machine-learning regression can estimate concrete "
-        "compressive strength from mixture proportions and curing age."
+        "This project demonstrates the application of machine learning to a Civil "
+        "Engineering materials problem: estimating concrete compressive strength from "
+        "mixture proportions and curing age."
     )
-    st.markdown("### Potential educational value")
+    st.markdown("### Educational applications")
     st.markdown(
-        "- Demonstrates the use of data-driven methods in concrete materials research.\n"
-        "- Supports preliminary comparison of candidate mixtures.\n"
-        "- Helps students explore relationships between mixture inputs and predicted output.\n"
-        "- Encourages discussion of model evaluation, interpretability, and responsible use of AI."
+        "- Demonstrates a regression model applied to concrete materials data.\n"
+        "- Allows preliminary comparison of candidate mixtures.\n"
+        "- Shows model-level and individual-prediction explanations.\n"
+        "- Supports model evaluation using MAE, RMSE, and R².\n"
+        "- Encourages responsible interpretation of AI predictions."
     )
     st.warning(
-        "The application is not a substitute for concrete mix-design standards, "
-        "laboratory testing, structural design checks, or professional engineering judgment."
+        "This application does not replace mix-design standards, laboratory testing, "
+        "structural design checks, or professional engineering judgment."
     )
